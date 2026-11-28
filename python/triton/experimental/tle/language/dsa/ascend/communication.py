@@ -3,11 +3,26 @@
 import os
 import torch
 import torch.distributed as dist
-import shmem as ash
 
 _g_pe = None
 _g_world_size = None
 _g_mem_count = 0
+
+
+def _require_shmem():
+    """Load Ascend SHMEM only when a distributed host API is used."""
+    try:
+        import shmem as ash
+    except ModuleNotFoundError as exc:
+        if exc.name != "shmem":
+            raise
+        raise ModuleNotFoundError(
+            "Ascend TLE distributed communication requires the optional "
+            "'shmem' package. Install a compatible Ascend SHMEM runtime "
+            "before calling the communicator APIs.",
+            name="shmem",
+        ) from exc
+    return ash
 
 
 def _get_ash_ip_port():
@@ -20,6 +35,7 @@ def _get_ash_ip_port():
 
 def init_communicator(ip_port=None, ash_size=None, engine_type=None):
     global _g_pe, _g_world_size, _g_mem_count
+    ash = _require_shmem()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.npu.set_device(local_rank)
     dist.init_process_group(backend="hccl", rank=local_rank)
@@ -51,6 +67,7 @@ def create_dist_tensor(buf_tensor):
     count back to 0.
     """
     global _g_mem_count
+    ash = _require_shmem()
     if isinstance(buf_tensor, torch.Tensor):
         peer_mem = ash.aclshmem_create_tensor([buf_tensor.numel()], dtype=buf_tensor.dtype, device_id=_g_pe)
         _g_mem_count += 1
@@ -67,6 +84,7 @@ def cleanup_communicator(peer_mem):
     `aclshmem_finalize()` called.
     """
     global _g_mem_count
+    ash = _require_shmem()
     torch.npu.synchronize()
     dist.barrier()
     ash.aclshmem_free_tensor(peer_mem)
